@@ -33,9 +33,14 @@ spring:
 file:
   upload:
     dir: ${USERPROFILE}/uploads/batch-csv # change if needed; Windows-friendly
+  output:
+    dir: ${USERPROFILE}/uploads/batch-output # where we write the comparison CSV
 
 batch:
   chunk-size: 1000
   concurrency:
     enabled: true
     threads: 4
+  rest:
+    base-url: http://localhost:8085/api/persons
+    page-size: 500

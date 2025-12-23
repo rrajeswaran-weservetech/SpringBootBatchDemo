@@ -13,6 +13,14 @@ import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.database.BeanPropertyItemSqlParameterSourceProvider;
 import org.springframework.batch.item.database.JdbcBatchItemWriter;
 import org.springframework.batch.item.database.builder.JdbcBatchItemWriterBuilder;
+import org.springframework.batch.item.file.FlatFileItemWriter;
+import org.springframework.batch.item.file.builder.FlatFileItemWriterBuilder;
+import org.springframework.batch.item.file.transform.BeanWrapperFieldExtractor;
+import org.springframework.batch.item.file.transform.DelimitedLineAggregator;
+import com.example.batch.writer.VersioningPersonItemWriter;
+import com.example.batch.repository.PersonRepository;
+import org.springframework.web.client.RestClient;
+import com.example.batch.reader.RestPagedPersonItemReader;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.LineCallbackHandler;
 import org.springframework.batch.item.file.builder.FlatFileItemReaderBuilder;
@@ -20,11 +28,13 @@ import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
 import org.springframework.batch.item.file.mapping.DefaultLineMapper;
 import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
 import org.springframework.batch.item.support.SynchronizedItemStreamReader;
+import org.springframework.batch.item.support.SynchronizedItemStreamWriter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.PathResource;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -32,8 +42,13 @@ import org.springframework.transaction.PlatformTransactionManager;
 import javax.sql.DataSource;
 
 @Configuration
-@EnableConfigurationProperties({BatchProperties.class, FileUploadProperties.class})
+@EnableConfigurationProperties({BatchProperties.class, FileUploadProperties.class, FileOutputProperties.class})
 public class BatchConfig {
+
+    @Bean
+    public RestClient restClient() {
+        return RestClient.create();
+    }
 
     @Bean
     @StepScope
@@ -101,7 +116,7 @@ public class BatchConfig {
                 .build();
     }
 
-    @Bean
+    @Bean(name = "batchTaskExecutor")
     public TaskExecutor taskExecutor(BatchProperties properties) {
         SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor("batch-exec-");
         executor.setConcurrencyLimit(properties.getConcurrency().getThreads());
@@ -112,10 +127,10 @@ public class BatchConfig {
     public Step csvToDbStep(JobRepository jobRepository,
                             PlatformTransactionManager transactionManager,
                             SynchronizedItemStreamReader<Person> synchronizedReader,
-                            ItemProcessor<Person, Person> personProcessor,
-                            JdbcBatchItemWriter<Person> personWriter,
+                            @org.springframework.beans.factory.annotation.Qualifier("personProcessor") ItemProcessor<Person, Person> personProcessor,
+                            VersioningPersonItemWriter personWriter,
                             BatchProperties properties,
-                            TaskExecutor taskExecutor,
+                            @org.springframework.beans.factory.annotation.Qualifier("batchTaskExecutor") TaskExecutor taskExecutor,
                             PersonSkipListener personSkipListener) {
 
         StepBuilder builder = new StepBuilder("csvToDbStep", jobRepository);
@@ -129,16 +144,78 @@ public class BatchConfig {
                 .skip(Exception.class)
                 .listener(personSkipListener)
                 .taskExecutor(taskExecutor)
-                .throttleLimit(properties.getConcurrency().getThreads())
                 .build();
         return step;
     }
 
     @Bean
-    public Job importPersonJob(JobRepository jobRepository, Step csvToDbStep) {
+    @StepScope
+    public RestPagedPersonItemReader restPersonReader(RestClient restClient,
+                                                      BatchProperties properties) {
+        String baseUrl = properties.getRest().getBaseUrl();
+        int size = properties.getRest().getPageSize();
+        return new RestPagedPersonItemReader(restClient, baseUrl, size);
+    }
+
+    @Bean
+    public ItemProcessor<Person, Person> personMatchProcessor(com.example.batch.repository.PersonRepository repo) {
+        return restItem -> {
+            if (restItem == null || restItem.getEmail() == null) return null;
+            var opt = repo.findCurrentByEmail(restItem.getEmail());
+            if (opt.isEmpty()) return null;
+            var cur = opt.get();
+            boolean same = eq(cur.getFirstName(), restItem.getFirstName())
+                    && eq(cur.getLastName(), restItem.getLastName())
+                    && eq(cur.getEmail(), restItem.getEmail())
+                    && eq(cur.getAge(), restItem.getAge());
+            return same ? restItem : null;
+        };
+    }
+
+    private static boolean eq(Object a, Object b) { return (a == null ? b == null : a.equals(b)); }
+
+    @Bean
+    @StepScope
+    public FlatFileItemWriter<Person> matchCsvWriter(@Value("#{jobParameters['outFile']}") String outFile) {
+        BeanWrapperFieldExtractor<Person> extractor = new BeanWrapperFieldExtractor<>();
+        extractor.setNames(new String[]{"firstName","lastName","email","age"});
+        DelimitedLineAggregator<Person> aggregator = new DelimitedLineAggregator<>();
+        aggregator.setDelimiter(",");
+        aggregator.setFieldExtractor(extractor);
+        return new FlatFileItemWriterBuilder<Person>()
+                .name("matchCsvWriter")
+                .resource(new PathResource(outFile))
+                .lineAggregator(aggregator)
+                .headerCallback(writer -> writer.write("firstName,lastName,email,age"))
+                .append(false)
+                .build();
+    }
+
+    @Bean
+    public Step restCompareStep(JobRepository jobRepository,
+                                PlatformTransactionManager transactionManager,
+                                RestPagedPersonItemReader restPersonReader,
+                                @org.springframework.beans.factory.annotation.Qualifier("personMatchProcessor") ItemProcessor<Person, Person> personMatchProcessor,
+                                FlatFileItemWriter<Person> matchCsvWriter,
+                                BatchProperties properties,
+                                @org.springframework.beans.factory.annotation.Qualifier("batchTaskExecutor") TaskExecutor taskExecutor) {
+        return new StepBuilder("restCompareStep", jobRepository)
+                .<Person, Person>chunk(properties.getChunkSize(), transactionManager)
+                .reader(restPersonReader)
+                .processor(personMatchProcessor)
+                .writer(matchCsvWriter)
+                .taskExecutor(taskExecutor)
+                .build();
+    }
+
+    @Bean
+    public Job importPersonJob(JobRepository jobRepository,
+                               @org.springframework.beans.factory.annotation.Qualifier("csvToDbStep") Step csvToDbStep,
+                               @org.springframework.beans.factory.annotation.Qualifier("restCompareStep") Step restCompareStep) {
         return new JobBuilder("importPersonJob", jobRepository)
                 .incrementer(new RunIdIncrementer())
                 .start(csvToDbStep)
+                .next(restCompareStep)
                 .build();
     }
 }

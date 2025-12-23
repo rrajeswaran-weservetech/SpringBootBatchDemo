@@ -6,6 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class BatchProperties {
     private int chunkSize = 1000;
     private Concurrency concurrency = new Concurrency();
+    private Rest rest = new Rest();
 
     public int getChunkSize() {
         return chunkSize;
@@ -21,6 +22,14 @@ public class BatchProperties {
 
     public void setConcurrency(Concurrency concurrency) {
         this.concurrency = concurrency;
+    }
+
+    public Rest getRest() {
+        return rest;
+    }
+
+    public void setRest(Rest rest) {
+        this.rest = rest;
     }
 
     public static class Concurrency {
@@ -42,5 +51,15 @@ public class BatchProperties {
         public void setThreads(int threads) {
             this.threads = threads;
         }
+    }
+
+    public static class Rest {
+        private String baseUrl = "http://localhost:8080/api/persons";
+        private int pageSize = 500;
+
+        public String getBaseUrl() { return baseUrl; }
+        public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
+        public int getPageSize() { return pageSize; }
+        public void setPageSize(int pageSize) { this.pageSize = pageSize; }
     }
 }
