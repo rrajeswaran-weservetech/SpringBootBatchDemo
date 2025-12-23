@@ -1,0 +1,10 @@
+com\example\batch\config\BatchProperties.class
+com\example\batch\web\UploadController.class
+com\example\batch\config\FileUploadProperties.class
+com\example\batch\config\BatchConfig.class
+com\example\batch\listener\PersonSkipListener.class
+com\example\batch\model\Person.class
+com\example\batch\service\StorageService.class
+com\example\batch\model\Person$PersonBuilder.class
+com\example\batch\config\BatchProperties$Concurrency.class
+com\example\batch\SpringBatchMssqlCsvApplication.class

@@ -1,0 +1,6 @@
+<component name="ArtifactManager">
+  <artifact type="war" name="batch-demo">
+    <output-path>$PROJECT_DIR$/out/artifacts/batch_demo</output-path>
+    <root id="archive" name="batch-demo.war" />
+  </artifact>
+</component>
